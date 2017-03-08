@@ -1,17 +1,23 @@
 package org.apache.flink;
 
+import java.io.IOException;
+import java.io.Serializable;
 import java.text.DateFormat;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.StreamSupport;
 
+import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeHint;
+import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.api.java.typeutils.TupleTypeInfo;
 import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.source.FromElementsFunction;
 import org.apache.flink.streaming.api.functions.timestamps.AscendingTimestampExtractor;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
@@ -43,7 +49,7 @@ import org.apache.flink.streaming.api.windowing.triggers.ContinuousEventTimeTrig
 	 at org.apache.flink.runtime.taskmanager.Task.run(Task.java:655)
 	 at java.lang.Thread.run(Thread.java:745)
  */
-public class Reproducer {
+public class Reproducer implements Serializable {
 
 	private static final DateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
 
@@ -57,19 +63,8 @@ public class Reproducer {
 		env.setParallelism(1);
 
 		env
-			.fromElements(
-					fromDate("2017-03-04 04:51:04"),
-					fromDate("2017-03-03 18:11:02"),
-					fromDate("2017-03-03 12:51:02"),
-					fromDate("2017-03-03 21:51:04"),
-					fromDate("2017-03-04 02:11:00")
-			)
-
-			.map(e -> {
-				// Comment the sleep and it won't fail
-				TimeUnit.MILLISECONDS.sleep(100);
-				return e;
-			})
+			// Reduce the sleep duration and it won't fail
+			.addSource(getSourceFunction(env.getConfig(), 100))
 			.returns(new TypeHint<Tuple2<Long, String>>(){}.getTypeInfo())
 			.assignTimestampsAndWatermarks(new AscendingTimestampExtractor<Tuple2<Long, String>>() {
 				@Override
@@ -77,6 +72,7 @@ public class Reproducer {
 					return event.f0;
 				}
 			})
+
 			.keyBy(new KeySelector<Tuple2<Long,String>, String>() {
 				@Override
 				public String getKey(Tuple2<Long, String> value) throws Exception {
@@ -84,7 +80,7 @@ public class Reproducer {
 				}
 			})
 			.window(TumblingEventTimeWindows.of(Time.of(1, TimeUnit.HOURS)))
-			.trigger(ContinuousEventTimeTrigger.of(Time.of(30, TimeUnit.SECONDS)))
+			.trigger(ContinuousEventTimeTrigger.of(Time.of(10, TimeUnit.MINUTES)))
 			.allowedLateness(Time.hours(2))
 
 			.apply(
@@ -96,6 +92,21 @@ public class Reproducer {
 			.print();
 
 		env.execute();
+	}
+
+	private FromElementsFunction getSourceFunction(ExecutionConfig config, long wait) throws IOException {
+		TupleTypeInfo tupleTypeInfo = new TupleTypeInfo(BasicTypeInfo.LONG_TYPE_INFO, BasicTypeInfo.STRING_TYPE_INFO);
+		TypeSerializer<?>[] fieldSerializers = new TypeSerializer<?>[2];
+		fieldSerializers[0] = BasicTypeInfo.LONG_TYPE_INFO.createSerializer(config);
+		fieldSerializers[1] = BasicTypeInfo.STRING_TYPE_INFO.createSerializer(config);
+
+		return new FromElementsFunction<>(
+				new SlowTupleSerializer(tupleTypeInfo.getTypeClass(), fieldSerializers, wait),
+				fromDate("2017-03-04 04:51:04"),
+				fromDate("2017-03-03 18:11:02"),
+				fromDate("2017-03-03 12:51:02"),
+				fromDate("2017-03-03 21:51:04"),
+				fromDate("2017-03-04 02:11:00"));
 	}
 
 	private Tuple2<Long, String> fromDate(String date) {
