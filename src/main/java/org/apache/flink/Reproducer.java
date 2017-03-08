@@ -2,21 +2,18 @@ package org.apache.flink;
 
 import java.io.Serializable;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.StreamSupport;
 
-import org.apache.flink.api.common.functions.FoldFunction;
+import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.java.functions.KeySelector;
-import org.apache.flink.api.java.tuple.Tuple1;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor;
-import org.apache.flink.streaming.api.functions.windowing.WindowFunction;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.triggers.ContinuousEventTimeTrigger;
-import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 
 /**
  * Produce NPE :
@@ -60,6 +57,7 @@ public class Reproducer implements Serializable {
 			.fromParallelCollection(new DataSupplier.EventsIterator(), new TypeHint<Tuple2<Long, String>>(){}.getTypeInfo())
 			.setParallelism(8)
 			.map(e -> {
+				// Comment the sleep and it won't fail
 				TimeUnit.MILLISECONDS.sleep(10);
 				return e;
 			})
@@ -80,18 +78,11 @@ public class Reproducer implements Serializable {
 			.trigger(ContinuousEventTimeTrigger.of(Time.of(30, TimeUnit.SECONDS)))
 			.allowedLateness(Time.hours(2))
 
-			.fold(
-				new Tuple1<>(0L),
-				(FoldFunction<Tuple2<Long, String>, Tuple1<Long>>) (accumulator, event) -> {
-					accumulator.f0 += 1;
-					return accumulator;
-				},
-				(WindowFunction<Tuple1<Long>, Tuple3<String, Long, Long>, String, TimeWindow>) (key, window, accumulators, out) -> {
-					Long count = accumulators.iterator().next().f0;
-					out.collect(new Tuple3<>(key, window.getEnd(), count));
-				},
-				new TypeHint<Tuple1<Long>>(){}.getTypeInfo(),
-				new TypeHint<Tuple3<String, Long, Long>>(){}.getTypeInfo()
+			.apply(
+					(s, window, input, out) ->
+							out.collect("Window: " + window + ", count: " + StreamSupport.stream(input.spliterator(), false).count())
+					,
+					BasicTypeInfo.STRING_TYPE_INFO
 			)
 			.print();
 
