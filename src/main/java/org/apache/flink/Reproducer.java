@@ -1,6 +1,8 @@
 package org.apache.flink;
 
-import java.io.Serializable;
+import java.text.DateFormat;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.StreamSupport;
 
@@ -10,14 +12,14 @@ import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor;
+import org.apache.flink.streaming.api.functions.timestamps.AscendingTimestampExtractor;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.triggers.ContinuousEventTimeTrigger;
 
 /**
  * Produce NPE :
- * Exception in thread "main" org.apache.flink.runtime.client.JobExecutionException: Job execution failed.
+ Exception in thread "main" org.apache.flink.runtime.client.JobExecutionException: Job execution failed.
 	 at org.apache.flink.runtime.jobmanager.JobManager$$anonfun$handleMessage$1$$anonfun$applyOrElse$6.apply$mcV$sp(JobManager.scala:900)
 	 at org.apache.flink.runtime.jobmanager.JobManager$$anonfun$handleMessage$1$$anonfun$applyOrElse$6.apply(JobManager.scala:843)
 	 at org.apache.flink.runtime.jobmanager.JobManager$$anonfun$handleMessage$1$$anonfun$applyOrElse$6.apply(JobManager.scala:843)
@@ -41,8 +43,9 @@ import org.apache.flink.streaming.api.windowing.triggers.ContinuousEventTimeTrig
 	 at org.apache.flink.runtime.taskmanager.Task.run(Task.java:655)
 	 at java.lang.Thread.run(Thread.java:745)
  */
-public class Reproducer implements Serializable {
+public class Reproducer {
 
+	private static final DateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
 
 	public static void main(String[] args) throws Exception {
 		new Reproducer().run();
@@ -54,17 +57,23 @@ public class Reproducer implements Serializable {
 		env.setParallelism(1);
 
 		env
-			.fromParallelCollection(new DataSupplier.EventsIterator(), new TypeHint<Tuple2<Long, String>>(){}.getTypeInfo())
-			.setParallelism(8)
+			.fromElements(
+					fromDate("2017-03-04 04:51:04"),
+					fromDate("2017-03-03 18:11:02"),
+					fromDate("2017-03-03 12:51:02"),
+					fromDate("2017-03-03 21:51:04"),
+					fromDate("2017-03-04 02:11:00")
+			)
+
 			.map(e -> {
 				// Comment the sleep and it won't fail
-				TimeUnit.MILLISECONDS.sleep(10);
+				TimeUnit.MILLISECONDS.sleep(100);
 				return e;
 			})
 			.returns(new TypeHint<Tuple2<Long, String>>(){}.getTypeInfo())
-			.assignTimestampsAndWatermarks(new BoundedOutOfOrdernessTimestampExtractor<Tuple2<Long, String>>(Time.minutes(10)) {
+			.assignTimestampsAndWatermarks(new AscendingTimestampExtractor<Tuple2<Long, String>>() {
 				@Override
-				public long extractTimestamp(Tuple2<Long, String> event) {
+				public long extractAscendingTimestamp(Tuple2<Long, String> event) {
 					return event.f0;
 				}
 			})
@@ -87,6 +96,14 @@ public class Reproducer implements Serializable {
 			.print();
 
 		env.execute();
+	}
+
+	private Tuple2<Long, String> fromDate(String date) {
+		try {
+			return Tuple2.of(DATE_FORMAT.parse(date).getTime(), "A_CODE");
+		} catch (ParseException e) {
+			throw new RuntimeException(e);
+		}
 	}
 
 }
